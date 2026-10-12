@@ -25,49 +25,91 @@ button{padding:10px 16px;font-size:16px}
 </div>
 <br>
 <button onclick="startCamera()">啟動鏡頭</button>
-<p class="small">請將發票號碼置於綠框範圍內</p>
+<p class="small">請將發票號碼與總計金額置於綠框範圍內</p>
 <label>發票號碼</label>
 <input id="invoiceNo" readonly>
-<label>金額(推測)</label>
+<label>金額(推測 - 以「總計/合計」為優先)</label>
 <input id="amount" readonly>
 <canvas id="canvas" style="display:none"></canvas>
 </div>
 <script>
-const video=document.getElementById('video');
-const canvas=document.getElementById('canvas');
-const ctx=canvas.getContext('2d');
-let scanning=false;
+const video = document.getElementById('video');
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+let scanning = false;
+
 async function startCamera(){
- const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
- video.srcObject=stream;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    video.srcObject = stream;
+  } catch (e) {
+    console.error('camera error', e);
+    alert('無法取得相機權限：' + e.message);
+  }
 }
+
+function normalizeOCRText(text){
+  if(!text) return '';
+  text = text.replace(/[\uFF10-\uFF19]/g, c => String.fromCharCode(c.charCodeAt(0) - 0xFF10 + 48));
+  text = text.replace(/，/g, ',').replace(/。/g, '.').replace(/：/g, ':').replace(/／/g, '/');
+  text = text.replace(/\u00A0/g, ' ');
+  return text;
+}
+
 async function scan(){
- if(scanning||video.videoWidth===0) return;
- scanning=true;
- const sx=video.videoWidth*0.15;
- const sy=video.videoHeight*0.35;
- const sw=video.videoWidth*0.70;
- const sh=video.videoHeight*0.18;
- canvas.width=sw; canvas.height=sh;
- ctx.drawImage(video,sx,sy,sw,sh,0,0,sw,sh);
- try{
-  const r=await Tesseract.recognize(canvas,'eng');
-  const text=r.data.text;
-  const inv=text.match(/[A-Z]{2}[- ]?\d{8}/);
-  if(inv){
-    document.getElementById('invoiceNo').value=inv[0].replace('-','');
-    navigator.vibrate && navigator.vibrate(100);
+  if(scanning || video.videoWidth === 0) return;
+  scanning = true;
+  const sx = video.videoWidth * 0.15;
+  const sy = video.videoHeight * 0.35;
+  const sw = video.videoWidth * 0.70;
+  const sh = video.videoHeight * 0.18;
+  canvas.width = sw; canvas.height = sh;
+  ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+
+  try{
+    const r = await Tesseract.recognize(canvas, 'chi_tra+eng', {
+      logger: m => { /* 可開啟做除錯：console.log(m) */ }
+    });
+    let text = r.data.text || '';
+    text = normalizeOCRText(text);
+    console.log('OCR raw:', r.data.text);
+    console.log('OCR normalized:', text);
+
+    const totalPattern = /(總計|合計|總金額|總額|TOTAL|Total|AMOUNT)[\s:：]*([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)/i;
+    const totalPatternLoose = /(總計|合計|總金額|總額|TOTAL|Total|AMOUNT)[\s\S]{0,30}?([0-9]{1,3}(?:,[0-9]{3})*(?:\.[0-9]+)?)/i;
+
+    let amountFound = null;
+    let m = text.match(totalPattern);
+    if(!m) m = text.match(totalPatternLoose);
+    if(m){
+      amountFound = m[2];
+      const normalizedAmount = amountFound.replace(/,/g, '');
+      document.getElementById('amount').value = normalizedAmount;
+    } else {
+      const withoutInv = text.replace(/[A-Z]{2}[- ]?\d{8}/g, ' ');
+      const nums = withoutInv.match(/\d{1,3}(?:,\d{3})*(?:\.\d+)?/g);
+      if(nums && nums.length){
+        let max = 0;
+        nums.forEach(n=>{
+          let v = parseFloat(n.replace(/,/g,''));
+          if(!isNaN(v) && v > max && v < 10000000) max = v;
+        });
+        if(max > 0) document.getElementById('amount').value = String(max);
+      }
+    }
+
+    const invMatch = text.match(/[A-Z]{2}[- ]?\d{8}/);
+    if(invMatch){
+      document.getElementById('invoiceNo').value = invMatch[0].replace(/[- ]/g,'');
+      navigator.vibrate && navigator.vibrate(100);
+    }
+  }catch(e){
+    console.log(e);
   }
-  const nums=text.match(/\d{1,3}(,\d{3})*/g);
-  if(nums){
-    let max=0;
-    nums.forEach(n=>{let v=parseInt(n.replace(/,/g,'')); if(v>max&&v<1000000) max=v;});
-    if(max>0) document.getElementById('amount').value=max;
-  }
- }catch(e){console.log(e);}
- scanning=false;
+  scanning = false;
 }
-setInterval(scan,1500);
+
+setInterval(scan, 1500);
 </script>
 </body>
 </html>
